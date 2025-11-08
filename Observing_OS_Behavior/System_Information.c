@@ -42,10 +42,10 @@ int main()
 	fclose(fp);
 
 	printf("CPUs: %d\n", cpu_count);
-  printf("CPU Model: %s\n", model);
-  printf("Total Memory: %ld kB\n", total_memory);
-  printf("Free Memory: %ld kB\n", free_memory);
-  printf("Load Average: %.2f %.2f %.2f\n", load1, load5, load15);
+	printf("CPU Model: %s\n", model);
+    printf("Total Memory: %ld kB\n", total_memory);
+    printf("Free Memory: %ld kB\n", free_memory);
+    printf("Load Average: %.2f %.2f %.2f\n", load1, load5, load15);
 
 	return 0;
 }
