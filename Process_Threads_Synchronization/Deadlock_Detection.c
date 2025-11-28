@@ -6,6 +6,7 @@
 #include <time.h>
 #include <stdint.h>
 #include <inttypes.h>
+#include <string.h>
 
 #define N_THREADS 8
 #define M_RESOURCES 5
@@ -16,7 +17,6 @@
 enum { STRAT_RANDOM = 0, STRAT_LEAST_ALLOC = 1 };
 
 int strategy = STRAT_LEAST_ALLOC;
-
 int available[M_RESOURCES];
 int alloc[N_THREADS][M_RESOURCES];
 int request_vec[N_THREADS][M_RESOURCES];
@@ -34,12 +34,6 @@ static inline uint64_t now_ns() {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
     return (uint64_t)t.tv_sec * 1000000000ULL + t.tv_nsec;
-}
-
-void cleanup_and_exit() {
-    running = 0;
-    for (int i = 0; i < N_THREADS; ++i)
-        pthread_cond_broadcast(&thread_cond[i]);
 }
 
 int try_allocate(int tid, int req[M_RESOURCES]) {
@@ -61,12 +55,44 @@ void release_allocation(int tid) {
     }
 }
 
+static void dfs_util(int u,
+                     int wait_for[N_THREADS][N_THREADS],
+                     int visited[N_THREADS],
+                     int onstack[N_THREADS],
+                     int stack[],
+                     int *sp,
+                     int victims[],
+                     int *victim_count,
+                     int *found)
+{
+    if (*found) return;
+    visited[u] = 1;
+    onstack[u] = 1;
+    stack[(*sp)++] = u;
+    for (int v = 0; v < N_THREADS; ++v) {
+        if (!wait_for[u][v]) continue;
+        if (!visited[v]) {
+            dfs_util(v, wait_for, visited, onstack, stack, sp, victims, victim_count, found);
+            if (*found) return;
+        } else if (onstack[v]) {
+            int start = *sp - 1;
+            while (start >= 0 && stack[start] != v) start--;
+            if (start < 0) start = 0;
+            *victim_count = 0;
+            for (int k = start; k < *sp; ++k) victims[(*victim_count)++] = stack[k];
+            *found = 1;
+            return;
+        }
+    }
+    onstack[u] = 0;
+    (*sp)--;
+}
+
 int detect_cycle_and_collect(int victims[], int *victim_count) {
     int wait_for[N_THREADS][N_THREADS];
     for (int i = 0; i < N_THREADS; ++i)
         for (int j = 0; j < N_THREADS; ++j)
             wait_for[i][j] = 0;
-
     for (int t = 0; t < N_THREADS; ++t) {
         if (!waiting[t]) continue;
         for (int r = 0; r < M_RESOURCES; ++r) {
@@ -76,35 +102,17 @@ int detect_cycle_and_collect(int victims[], int *victim_count) {
             }
         }
     }
-
     int visited[N_THREADS], onstack[N_THREADS], stack[N_THREADS];
     for (int i = 0; i < N_THREADS; ++i) { visited[i]=0; onstack[i]=0; }
     int found = 0;
     int sp = 0;
-
-    void dfs(int u) {
-        if (found) return;
-        visited[u] = 1;
-        onstack[u] = 1;
-        stack[sp++] = u;
-        for (int v = 0; v < N_THREADS; ++v) if (wait_for[u][v]) {
-            if (!visited[v]) dfs(v);
-            else if (onstack[v]) {
-                found = 1;
-                int start = sp-1;
-                while (start >= 0 && stack[start] != v) start--;
-                if (start < 0) start = 0;
-                *victim_count = 0;
-                for (int k = start; k < sp; ++k) victims[(*victim_count)++] = stack[k];
-                return;
-            }
-            if (found) return;
+    *victim_count = 0;
+    for (int i = 0; i < N_THREADS; ++i) {
+        if (waiting[i] && !visited[i]) {
+            dfs_util(i, wait_for, visited, onstack, stack, &sp, victims, victim_count, &found);
+            if (found) break;
         }
-        onstack[u] = 0;
-        sp--;
     }
-
-    for (int i = 0; i < N_THREADS; ++i) if (waiting[i] && !visited[i]) dfs(i);
     return found;
 }
 
@@ -177,7 +185,7 @@ void *worker(void *arg) {
             simulate_work(tid);
             pthread_mutex_lock(&sys_mutex);
             release_allocation(tid);
-            pthread_cond_broadcast(NULL);
+            for (int i = 0; i < N_THREADS; ++i) pthread_cond_broadcast(&thread_cond[i]);
             pthread_mutex_unlock(&sys_mutex);
             usleep((rand() % 200 + 50) * 1000);
             continue;
@@ -197,6 +205,7 @@ void *worker(void *arg) {
                 simulate_work(tid);
                 pthread_mutex_lock(&sys_mutex);
                 release_allocation(tid);
+                for (int i = 0; i < N_THREADS; ++i) pthread_cond_broadcast(&thread_cond[i]);
                 pthread_mutex_unlock(&sys_mutex);
                 usleep((rand() % 200 + 50) * 1000);
             }
@@ -229,8 +238,8 @@ int main(int argc, char **argv) {
     for (int i = 0; i < N_THREADS; ++i) pthread_join(wthreads[i], NULL);
     pthread_join(detector, NULL);
     printf("Detection calls: %" PRIu64 "\n", detect_calls);
-    printf("Total detection time: %" PRIu64 " ms\n", detect_time_ns / 1000000ULL);
-    if (detect_calls) printf("Avg detection time: %.3f ms\n", (double)detect_time_ns / (double)detect_calls / 1e6);
+    printf("Total detection time: %" PRIu64 " ms\n", (uint64_t)(detect_time_ns / 1000000ULL));
+    if (detect_calls) printf("Avg detection time: %.3f ms\n", (double)(detect_time_ns) / (double)detect_calls / 1e6);
     printf("Recoveries performed: %" PRIu64 "\n", recoveries);
     printf("Final available vector:");
     for (int r = 0; r < M_RESOURCES; ++r) printf(" %d", available[r]);
