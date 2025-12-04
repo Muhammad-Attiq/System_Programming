@@ -1,4 +1,4 @@
-# Systems_Programming
+# System_Programming
 
 This repository contains C programs related to systems programming.
 
